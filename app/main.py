@@ -1,0 +1,105 @@
+import json
+from contextlib import asynccontextmanager
+from typing import Literal
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from openai import AsyncOpenAI
+from pydantic import BaseModel, Field, model_validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+
+from .config import Settings, get_settings
+from .dashboard import ContextBundle, DashboardClient, DashboardUnavailable
+
+
+class ChatContext(BaseModel):
+    page: Literal["player", "team", "standings"]
+    player_id: int | None = Field(default=None, gt=0)
+    team_abbrev: str | None = Field(default=None, min_length=2, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_page_target(self):
+        if self.page == "player" and not self.player_id:
+            raise ValueError("player_id is required for player context")
+        if self.page == "team" and not self.team_abbrev:
+            raise ValueError("team_abbrev is required for team context")
+        return self
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+    context: ChatContext
+
+
+class Evidence(BaseModel):
+    label: str
+    endpoint: str
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    evidence: list[Evidence]
+
+
+SYSTEM_INSTRUCTIONS = """You are NHL Intelligence, a concise hockey analyst.
+Use only the supplied dashboard data. Do not invent game events, injuries, line combinations, or facts absent from the context. This Phase 1 dashboard does not include game-level box scores or play-by-play. If asked what happened in a specific game, say that game-level data is not available yet and explain what season-level context you can provide. Explain statistics in plain language, distinguish facts from reasonable inferences, and keep answers under 220 words."""
+
+
+class IntelligenceService:
+    def __init__(self, settings: Settings, dashboard: DashboardClient | None = None, openai_client=None):
+        self.settings = settings
+        self.dashboard = dashboard or DashboardClient(settings.dashboard_api_url)
+        self.openai_client = openai_client or (AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None)
+
+    async def context_for(self, context: ChatContext) -> ContextBundle:
+        if context.page == "player":
+            return await self.dashboard.player_context(context.player_id)
+        if context.page == "team":
+            return await self.dashboard.team_context(context.team_abbrev)
+        return await self.dashboard.league_context()
+
+    async def answer(self, request: ChatRequest) -> ChatResponse:
+        if not self.openai_client:
+            raise HTTPException(status_code=503, detail="NHL Intelligence is not configured yet.")
+        try:
+            context = await self.context_for(request.context)
+        except DashboardUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        response = await self.openai_client.responses.create(
+            model=self.settings.openai_model,
+            instructions=SYSTEM_INSTRUCTIONS,
+            input=(f"Question: {request.message}\n\nPage context: {request.context.model_dump_json()}\n\nDashboard data (JSON): {json.dumps(context.facts, default=str)}"),
+        )
+        answer = getattr(response, "output_text", "").strip()
+        if not answer:
+            raise HTTPException(status_code=502, detail="The model returned an empty response.")
+        return ChatResponse(answer=answer, evidence=[Evidence(**item) for item in context.evidence])
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.intelligence = IntelligenceService(get_settings())
+    yield
+
+
+settings = get_settings()
+app = FastAPI(title="NHL Intelligence", version="0.1.0", lifespan=lifespan)
+limiter = Limiter(key_func=get_remote_address, default_limits=["30/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(CORSMiddleware, allow_origins=settings.allowed_origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/chat", response_model=ChatResponse)
+@limiter.limit("10/minute")
+async def chat(payload: ChatRequest, request: Request):
+    return await request.app.state.intelligence.answer(payload)
