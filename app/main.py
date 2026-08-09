@@ -1,10 +1,11 @@
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, Field, model_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -13,6 +14,9 @@ from slowapi.util import get_remote_address
 
 from .config import Settings, get_settings
 from .dashboard import ContextBundle, DashboardClient, DashboardUnavailable
+
+
+logger = logging.getLogger(__name__)
 
 
 class ChatContext(BaseModel):
@@ -68,11 +72,22 @@ class IntelligenceService:
             context = await self.context_for(request.context)
         except DashboardUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        response = await self.openai_client.responses.create(
-            model=self.settings.openai_model,
-            instructions=SYSTEM_INSTRUCTIONS,
-            input=(f"Question: {request.message}\n\nPage context: {request.context.model_dump_json()}\n\nDashboard data (JSON): {json.dumps(context.facts, default=str)}"),
-        )
+        try:
+            response = await self.openai_client.responses.create(
+                model=self.settings.openai_model,
+                instructions=SYSTEM_INSTRUCTIONS,
+                input=(f"Question: {request.message}\n\nPage context: {request.context.model_dump_json()}\n\nDashboard data (JSON): {json.dumps(context.facts, default=str)}"),
+            )
+        except OpenAIError as exc:
+            logger.exception("OpenAI response failed")
+            status_code = getattr(exc, "status_code", None)
+            if status_code in {401, 403}:
+                detail = "NHL Intelligence's AI provider configuration needs attention."
+            elif status_code == 429:
+                detail = "NHL Intelligence has reached its current AI usage limit."
+            else:
+                detail = "NHL Intelligence's AI provider is temporarily unavailable."
+            raise HTTPException(status_code=503, detail=detail) from exc
         answer = getattr(response, "output_text", "").strip()
         if not answer:
             raise HTTPException(status_code=502, detail="The model returned an empty response.")
