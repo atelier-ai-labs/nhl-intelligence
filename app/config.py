@@ -8,6 +8,8 @@ class Settings:
     openai_api_key: str | None
     openai_model: str
     allowed_origins: list[str]
+    max_output_tokens: int = 600
+    max_context_chars: int = 24000
 
 
 def get_settings() -> Settings:
@@ -20,4 +22,6 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
         allowed_origins=[origin.strip() for origin in origins.split(",") if origin.strip()],
+        max_output_tokens=int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "600")),
+        max_context_chars=int(os.getenv("OPENAI_MAX_CONTEXT_CHARS", "24000")),
     )

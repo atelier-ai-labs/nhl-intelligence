@@ -105,6 +105,16 @@ resource "google_cloud_run_v2_service" "api" {
       }
 
       env {
+        name  = "OPENAI_MAX_OUTPUT_TOKENS"
+        value = "600"
+      }
+
+      env {
+        name  = "OPENAI_MAX_CONTEXT_CHARS"
+        value = "24000"
+      }
+
+      env {
         name = "OPENAI_API_KEY"
         value_source {
           secret_key_ref {
