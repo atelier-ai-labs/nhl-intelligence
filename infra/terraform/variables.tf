@@ -35,7 +35,7 @@ variable "allowed_origins" {
 variable "openai_model" {
   description = "OpenAI model used by the Intelligence service."
   type        = string
-  default     = "gpt-5.6-sol"
+  default     = "gpt-5.6-luna"
 }
 
 variable "openai_secret_id" {
