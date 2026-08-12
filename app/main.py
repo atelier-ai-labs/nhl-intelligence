@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, Field, model_validator
@@ -93,6 +94,45 @@ class IntelligenceService:
             raise HTTPException(status_code=502, detail="The model returned an empty response.")
         return ChatResponse(answer=answer, evidence=[Evidence(**item) for item in context.evidence])
 
+    async def answer_stream(self, request: ChatRequest):
+        """Yield server-sent events as the model produces answer text."""
+        if not self.openai_client:
+            raise HTTPException(status_code=503, detail="NHL Intelligence is not configured yet.")
+        try:
+            context = await self.context_for(request.context)
+        except DashboardUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        prompt = (
+            f"Question: {request.message}\n\nPage context: {request.context.model_dump_json()}"
+            f"\n\nDashboard data (JSON): {json.dumps(context.facts, default=str)}"
+        )
+        try:
+            stream = await self.openai_client.responses.create(
+                model=self.settings.openai_model,
+                instructions=SYSTEM_INSTRUCTIONS,
+                input=prompt,
+                stream=True,
+            )
+            async for event in stream:
+                if getattr(event, "type", None) == "response.output_text.delta":
+                    delta = getattr(event, "delta", "")
+                    if delta:
+                        yield f"data: {json.dumps({'type': 'delta', 'text': delta})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'evidence': context.evidence})}\n\n"
+        except OpenAIError as exc:
+            logger.exception("OpenAI streaming response failed")
+            yield f"data: {json.dumps({'type': 'error', 'message': self.provider_error(exc)})}\n\n"
+
+    @staticmethod
+    def provider_error(exc: OpenAIError) -> str:
+        status_code = getattr(exc, "status_code", None)
+        if status_code in {401, 403}:
+            return "NHL Intelligence's AI provider configuration needs attention."
+        if status_code == 429:
+            return "NHL Intelligence has reached its current AI usage limit."
+        return "NHL Intelligence's AI provider is temporarily unavailable."
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -118,3 +158,13 @@ async def health():
 @limiter.limit("10/minute")
 async def chat(payload: ChatRequest, request: Request):
     return await request.app.state.intelligence.answer(payload)
+
+
+@app.post("/chat/stream")
+@limiter.limit("10/minute")
+async def chat_stream(payload: ChatRequest, request: Request):
+    return StreamingResponse(
+        request.app.state.intelligence.answer_stream(payload),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
