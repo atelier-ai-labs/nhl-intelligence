@@ -21,9 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 class ChatContext(BaseModel):
-    page: Literal["player", "team", "standings"]
+    page: Literal["player", "team", "standings", "game"]
     player_id: int | None = Field(default=None, gt=0)
     team_abbrev: str | None = Field(default=None, min_length=2, max_length=3)
+    game_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_page_target(self):
@@ -31,6 +32,8 @@ class ChatContext(BaseModel):
             raise ValueError("player_id is required for player context")
         if self.page == "team" and not self.team_abbrev:
             raise ValueError("team_abbrev is required for team context")
+        if self.page == "game" and not self.game_id:
+            raise ValueError("game_id is required for game context")
         return self
 
 
@@ -64,6 +67,8 @@ class IntelligenceService:
             return await self.dashboard.player_context(context.player_id)
         if context.page == "team":
             return await self.dashboard.team_context(context.team_abbrev)
+        if context.page == "game":
+            return await self.dashboard.game_context(context.game_id)
         return await self.dashboard.league_context()
 
     def prompt_for(self, request: ChatRequest, context: ContextBundle) -> str:

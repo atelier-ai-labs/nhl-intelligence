@@ -46,6 +46,11 @@ def test_player_context_requires_player_id():
         ChatContext(page="player")
 
 
+def test_game_context_requires_game_id():
+    with pytest.raises(ValueError):
+        ChatContext(page="game")
+
+
 @pytest.mark.asyncio
 async def test_openai_failure_becomes_safe_service_error():
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"name": "Player One"}))
