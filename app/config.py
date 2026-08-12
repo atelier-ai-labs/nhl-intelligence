@@ -18,6 +18,6 @@ def get_settings() -> Settings:
             "https://nhl-dashboard-api.bravecoast-a5240643.westus2.azurecontainerapps.io",
         ).rstrip("/"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-sol"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
         allowed_origins=[origin.strip() for origin in origins.split(",") if origin.strip()],
     )
