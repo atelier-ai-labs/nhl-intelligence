@@ -92,3 +92,10 @@ class DashboardClient:
                 {"label": "Playoff simulation", "endpoint": "/playoff-odds"},
             ],
         )
+
+    async def game_context(self, game_id: int) -> ContextBundle:
+        game = await self._get(f"/games/{game_id}/boxscore")
+        return ContextBundle(
+            facts={"game": game},
+            evidence=[{"label": "NHL game box score", "endpoint": f"/games/{game_id}/boxscore"}],
+        )
