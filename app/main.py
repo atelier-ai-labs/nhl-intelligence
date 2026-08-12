@@ -66,6 +66,15 @@ class IntelligenceService:
             return await self.dashboard.team_context(context.team_abbrev)
         return await self.dashboard.league_context()
 
+    def prompt_for(self, request: ChatRequest, context: ContextBundle) -> str:
+        facts = json.dumps(context.facts, default=str)
+        if len(facts) > self.settings.max_context_chars:
+            facts = facts[: self.settings.max_context_chars] + "\n[Dashboard context truncated to control usage.]"
+        return (
+            f"Question: {request.message}\n\nPage context: {request.context.model_dump_json()}"
+            f"\n\nDashboard data (JSON): {facts}"
+        )
+
     async def answer(self, request: ChatRequest) -> ChatResponse:
         if not self.openai_client:
             raise HTTPException(status_code=503, detail="NHL Intelligence is not configured yet.")
@@ -77,7 +86,8 @@ class IntelligenceService:
             response = await self.openai_client.responses.create(
                 model=self.settings.openai_model,
                 instructions=SYSTEM_INSTRUCTIONS,
-                input=(f"Question: {request.message}\n\nPage context: {request.context.model_dump_json()}\n\nDashboard data (JSON): {json.dumps(context.facts, default=str)}"),
+                input=self.prompt_for(request, context),
+                max_output_tokens=self.settings.max_output_tokens,
             )
         except OpenAIError as exc:
             logger.exception("OpenAI response failed")
@@ -103,16 +113,14 @@ class IntelligenceService:
         except DashboardUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-        prompt = (
-            f"Question: {request.message}\n\nPage context: {request.context.model_dump_json()}"
-            f"\n\nDashboard data (JSON): {json.dumps(context.facts, default=str)}"
-        )
+        prompt = self.prompt_for(request, context)
         try:
             stream = await self.openai_client.responses.create(
                 model=self.settings.openai_model,
                 instructions=SYSTEM_INSTRUCTIONS,
                 input=prompt,
                 stream=True,
+                max_output_tokens=self.settings.max_output_tokens,
             )
             async for event in stream:
                 if getattr(event, "type", None) == "response.output_text.delta":
@@ -155,13 +163,15 @@ async def health():
 
 
 @app.post("/chat", response_model=ChatResponse)
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
+@limiter.limit("30/day")
 async def chat(payload: ChatRequest, request: Request):
     return await request.app.state.intelligence.answer(payload)
 
 
 @app.post("/chat/stream")
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
+@limiter.limit("30/day")
 async def chat_stream(payload: ChatRequest, request: Request):
     return StreamingResponse(
         request.app.state.intelligence.answer_stream(payload),
