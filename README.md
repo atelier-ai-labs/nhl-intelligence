@@ -1,5 +1,10 @@
 # NHL Intelligence
 
+> **Moved:** this service now lives in
+> [nmagera07/nhl-dashboard/intelligence](https://github.com/nmagera07/nhl-dashboard/tree/main/intelligence)
+> (history included), deployed on Azure Container Apps with free AI
+> providers. This repository is archived and read-only.
+
 A standalone, grounded conversational layer for the NHL Dashboard. It reads structured data from the dashboard public API, so it never receives dashboard database credentials.
 
 ## Phase 1
